@@ -21,40 +21,35 @@ object MainEntry {
     val rddMovies = movies.map(mapToMovies)
     val rddRatings = ratings.map(mapToRatings)
 
-    //convert rdd to dataframe
+    //convert rdd to dataFrame
     val dfUserWithSchema = spark.createDataFrame(rddUsers).toDF("userId", "gender","age","occupation","zipcode")
     val dfMoviesWithSchema = spark.createDataFrame(rddMovies).toDF("movieId", "title","year","genre")
     val dfRatingsWithSchema = spark.createDataFrame(rddRatings).toDF("userId", "movieId","rating","timestamp")
 
-    /*
-    Please calculate the average ratings, per genre and year (by year we mean the year in which the movies were released).
-    Please consider only movies, which were released after 1989.
-    Please consider the ratings of all persons aged 18-49 years
-    */
+    //explode the Array of genres
+    val dfMoviesWithSchemaExplode=dfMoviesWithSchema.select(explode(dfMoviesWithSchema("genre")),col("movieId"), col("title"),col("year"))
+      .withColumnRenamed("col","genres")
 
     //create TempViews
-    dfMoviesWithSchema.createOrReplaceTempView("movies")
+    dfMoviesWithSchemaExplode.createOrReplaceTempView("movies")
     dfRatingsWithSchema.createOrReplaceTempView("ratings")
     dfUserWithSchema.createOrReplaceTempView("user")
 
-  // Trying to use SparkSQL but missing a part where to deal with each genre (equivalent of explode in SQL
-    //To show the time difference between the two solutions
-
-   /*
-   val resultSQLDF=spark.sql("select avg(rating),count(movies.movieId),year,genre from movies " +
+    // Trying to use SparkSQL To show the time difference between the two solutions
+   val resultSQLDF=spark.sql("select genres,year,avg(rating) from movies " +
       " inner join ratings " +
       " ON movies.movieId=ratings.movieId " +
       " inner join user " +
       " ON user.userId=ratings.userId " +
       " where year>1989 and age >1 and age <50 " +
-      " group by year,genre" )
-      */
+      " group by year,genres " +
+      " order by genres , year ")
 
-    //resultDF.show(4)
-
-    val gfkDF=dfMoviesWithSchema.join(dfRatingsWithSchema,"movieId").join(dfUserWithSchema,"userId")
-      .filter(dfUserWithSchema("age")<50 && dfUserWithSchema("age")>1)
+    //Optimized query
+    val gfkDFOptimized=dfMoviesWithSchema
       .filter(dfMoviesWithSchema("year")>1989)
+      .join(dfRatingsWithSchema,"movieId")
+      .join(dfUserWithSchema.filter(dfUserWithSchema("age")<50 && dfUserWithSchema("age")>1),"userId")
       .select(explode(dfMoviesWithSchema("genre")),dfRatingsWithSchema("rating"),dfMoviesWithSchema("year"))
       .withColumnRenamed("col","genres")
       .groupBy("genres","year")
@@ -62,7 +57,8 @@ object MainEntry {
       .orderBy("genres","year")
 
 
-    val result=gfkDF
+  //write the data into csv file
+    val writeResult=gfkDFOptimized
       .coalesce(1)
       .write
       .format("com.databricks.spark.csv")
@@ -71,6 +67,10 @@ object MainEntry {
       .option("delimiter", ";")
       .save("src/resource/results")
 
+
+    //The optimized DF is more faster
+    spark.time(gfkDFOptimized.show(20))
+    spark.time(resultSQLDF.show(20))
 
     spark.stop()
 
